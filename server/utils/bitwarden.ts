@@ -4,8 +4,6 @@ import { getServerConfigFromBody } from '#shared/utils/servers'
 import { classifyFetchError } from './errors'
 import { bitwardenClientHeaders } from './client-headers'
 
-export { getServerConfigFromBody, resolveServerConfig, resolveServerUrls } from '#shared/utils/servers'
-
 let insecureAgent: Agent | undefined
 
 function getInsecureAgent(): Agent {

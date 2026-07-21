@@ -1,4 +1,5 @@
-import { getServerConfigFromBody, bitwardenFetch } from '../../../utils/bitwarden'
+import { getServerConfigFromBody } from '#shared/utils/servers'
+import { bitwardenFetch } from '../../../utils/bitwarden'
 import { classifyFetchError, throwBitwardenError } from '../../../utils/errors'
 
 /**
