@@ -1,0 +1,237 @@
+import { argon2id } from 'hash-wasm'
+import type { PreloginResponse } from '~/types/bitwarden'
+
+function toBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte)
+  }
+  return btoa(binary)
+}
+
+function fromBase64(value: string): Uint8Array {
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  return bytes
+}
+
+export async function hashMasterPassword(
+  password: string,
+  email: string,
+  prelogin: PreloginResponse,
+): Promise<string> {
+  const salt = new TextEncoder().encode(email.trim().toLowerCase())
+
+  if (prelogin.kdf === 1) {
+    const hash = await argon2id({
+      password,
+      salt,
+      parallelism: prelogin.kdfParallelism ?? 4,
+      iterations: prelogin.kdfIterations,
+      memorySize: prelogin.kdfMemory ?? 64,
+      hashLength: 32,
+      outputType: 'binary',
+    })
+    return toBase64(hash.buffer as ArrayBuffer)
+  }
+
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  )
+
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt,
+      iterations: prelogin.kdfIterations,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    256,
+  )
+
+  return toBase64(bits)
+}
+
+export async function makeMasterKey(
+  password: string,
+  email: string,
+  prelogin: PreloginResponse,
+): Promise<CryptoKey> {
+  const salt = new TextEncoder().encode(email.trim().toLowerCase())
+
+  if (prelogin.kdf === 1) {
+    const hash = await argon2id({
+      password,
+      salt,
+      parallelism: prelogin.kdfParallelism ?? 4,
+      iterations: prelogin.kdfIterations,
+      memorySize: prelogin.kdfMemory ?? 64,
+      hashLength: 32,
+      outputType: 'binary',
+    })
+    return crypto.subtle.importKey('raw', hash, { name: 'AES-CBC', length: 256 }, false, [
+      'decrypt',
+      'encrypt',
+    ])
+  }
+
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  )
+
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt,
+      iterations: prelogin.kdfIterations,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    256,
+  )
+
+  return crypto.subtle.importKey('raw', bits, { name: 'AES-CBC', length: 256 }, false, [
+    'decrypt',
+    'encrypt',
+  ])
+}
+
+async function decryptAesCbc(
+  encKey: CryptoKey,
+  iv: Uint8Array,
+  data: Uint8Array,
+): Promise<Uint8Array> {
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-CBC', iv },
+    encKey,
+    data,
+  )
+  return new Uint8Array(decrypted)
+}
+
+function fastConcat(arrays: Uint8Array[]): Uint8Array {
+  const total = arrays.reduce((sum, arr) => sum + arr.length, 0)
+  const result = new Uint8Array(total)
+  let offset = 0
+  for (const arr of arrays) {
+    result.set(arr, offset)
+    offset += arr.length
+  }
+  return result
+}
+
+async function hmacSha256(key: CryptoKey, data: Uint8Array): Promise<Uint8Array> {
+  const sig = await crypto.subtle.sign('HMAC', key, data)
+  return new Uint8Array(sig)
+}
+
+async function stretchKey(masterKey: CryptoKey): Promise<CryptoKey> {
+  const rawKey = await crypto.subtle.exportKey('raw', masterKey)
+  const encKeyBytes = await crypto.subtle.importKey(
+    'raw',
+    rawKey,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const encBits = await crypto.subtle.sign('HMAC', encKeyBytes, new TextEncoder().encode('enc'))
+  const macBits = await crypto.subtle.sign('HMAC', encKeyBytes, new TextEncoder().encode('mac'))
+
+  return crypto.subtle.importKey(
+    'raw',
+    encBits.slice(0, 32),
+    { name: 'AES-CBC', length: 256 },
+    false,
+    ['decrypt', 'encrypt'],
+  )
+}
+
+export async function decryptString(
+  encString: string,
+  masterKey: CryptoKey,
+): Promise<string | null> {
+  if (!encString) return null
+  if (!encString.includes('.')) return encString
+
+  const encType = encString.charAt(0)
+  if (encType === '0') {
+    return encString.substring(2) || encString
+  }
+
+  if (encType !== '2') return null
+
+  try {
+    const encData = encString.substring(2).split('|')
+    if (encData.length < 2) return null
+
+    const iv = fromBase64(encData[0])
+    const data = fromBase64(encData[1])
+    const encKey = await stretchKey(masterKey)
+
+    if (encData.length >= 3 && encData[2]) {
+      const macKeyMaterial = await crypto.subtle.exportKey('raw', masterKey)
+      const macKeyImport = await crypto.subtle.importKey(
+        'raw',
+        macKeyMaterial,
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign'],
+      )
+      const macKeyBytes = await crypto.subtle.sign(
+        'HMAC',
+        macKeyImport,
+        new TextEncoder().encode('mac'),
+      )
+      const macKeyFinal = await crypto.subtle.importKey(
+        'raw',
+        macKeyBytes.slice(0, 32),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign'],
+      )
+
+      const macData = fastConcat([iv, data])
+      const computedMac = await hmacSha256(macKeyFinal, macData)
+      const expectedMac = fromBase64(encData[2])
+
+      const match = computedMac.every((b, i) => b === expectedMac[i])
+      if (!match) return null
+    }
+
+    const decrypted = await decryptAesCbc(encKey, iv, data)
+    const paddingLen = decrypted[decrypted.length - 1]
+    if (paddingLen > 16 || paddingLen < 1) return null
+    const trimmed = decrypted.slice(0, decrypted.length - paddingLen)
+    return new TextDecoder().decode(trimmed)
+  }
+  catch {
+    return null
+  }
+}
+
+export async function decryptUserKey(
+  encryptedKey: string,
+  masterKey: CryptoKey,
+): Promise<CryptoKey | null> {
+  const decrypted = await decryptString(encryptedKey, masterKey)
+  if (!decrypted) return null
+
+  const keyBytes = fromBase64(decrypted)
+  return crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CBC', length: 256 }, false, [
+    'decrypt',
+    'encrypt',
+  ])
+}
