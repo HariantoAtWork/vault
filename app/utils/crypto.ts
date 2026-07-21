@@ -1,6 +1,14 @@
 import { argon2id } from 'hash-wasm'
 import type { PreloginResponse } from '~/types/bitwarden'
 
+/** Bitwarden SymmetricCryptoKey: 32-byte enc + 32-byte mac. */
+export interface SymmetricCryptoKey {
+  encKey: CryptoKey
+  macKey: CryptoKey
+  /** Full 64-byte raw material (for sessionStorage). */
+  raw: Uint8Array
+}
+
 function toBase64(buffer: ArrayBuffer | Uint8Array): string {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
   let binary = ''
@@ -17,6 +25,11 @@ function fromBase64(value: string): Uint8Array {
     bytes[i] = binary.charCodeAt(i)
   }
   return bytes
+}
+
+/** Copy into a standalone ArrayBuffer (avoids SharedArrayBuffer / offset issues). */
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 
 /**
@@ -123,10 +136,11 @@ async function decryptAesCbc(
   iv: Uint8Array,
   data: Uint8Array,
 ): Promise<Uint8Array> {
+  // SubtleCrypto AES-CBC already strips PKCS#7 padding.
   const decrypted = await crypto.subtle.decrypt(
-    { name: 'AES-CBC', iv },
+    { name: 'AES-CBC', iv: toArrayBuffer(iv) },
     encKey,
-    data,
+    toArrayBuffer(data),
   )
   return new Uint8Array(decrypted)
 }
@@ -143,57 +157,90 @@ function fastConcat(arrays: Uint8Array[]): Uint8Array {
 }
 
 async function hmacSha256(key: CryptoKey, data: Uint8Array): Promise<Uint8Array> {
-  const sig = await crypto.subtle.sign('HMAC', key, data)
+  const sig = await crypto.subtle.sign('HMAC', key, toArrayBuffer(data))
   return new Uint8Array(sig)
 }
 
-async function stretchKey(masterKey: CryptoKey): Promise<CryptoKey> {
-  const rawKey = await crypto.subtle.exportKey('raw', masterKey)
-  const encKeyBytes = await crypto.subtle.importKey(
+/**
+ * HKDF-Expand (RFC 5869) as used by Bitwarden for master-key stretch.
+ * For 32-byte output: HMAC(PRK, info || 0x01).
+ */
+async function hkdfExpand(
+  prk: ArrayBuffer | Uint8Array,
+  info: string,
+  size: number,
+): Promise<Uint8Array> {
+  const prkBytes = prk instanceof Uint8Array ? prk : new Uint8Array(prk)
+  const infoBytes = new TextEncoder().encode(info)
+  const importedKey = await crypto.subtle.importKey(
     'raw',
-    rawKey,
+    toArrayBuffer(prkBytes),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
   )
-  const encBits = await crypto.subtle.sign('HMAC', encKeyBytes, new TextEncoder().encode('enc'))
 
-  return crypto.subtle.importKey(
-    'raw',
-    encBits.slice(0, 32),
-    { name: 'AES-CBC', length: 256 },
-    false,
-    ['decrypt', 'encrypt'],
-  )
+  const hashLen = 32
+  const okm = new Uint8Array(size)
+  let previousT = new Uint8Array(0)
+  const n = Math.ceil(size / hashLen)
+
+  for (let i = 0; i < n; i++) {
+    const t = new Uint8Array(previousT.length + infoBytes.length + 1)
+    t.set(previousT)
+    t.set(infoBytes, previousT.length)
+    t.set([i + 1], t.length - 1)
+    previousT = new Uint8Array(await crypto.subtle.sign('HMAC', importedKey, toArrayBuffer(t)))
+    okm.set(previousT.subarray(0, Math.min(hashLen, size - i * hashLen)), i * hashLen)
+  }
+
+  return okm
 }
 
-async function resolveMacKey(masterKey: CryptoKey): Promise<CryptoKey> {
-  const macKeyMaterial = await crypto.subtle.exportKey('raw', masterKey)
-  const macKeyImport = await crypto.subtle.importKey(
+/** Stretch a 32-byte master key into a 64-byte SymmetricCryptoKey (enc + mac). */
+export async function stretchMasterKey(masterKey: CryptoKey): Promise<SymmetricCryptoKey> {
+  const raw = new Uint8Array(await crypto.subtle.exportKey('raw', masterKey))
+  const enc = await hkdfExpand(raw, 'enc', 32)
+  const mac = await hkdfExpand(raw, 'mac', 32)
+  const full = new Uint8Array(64)
+  full.set(enc, 0)
+  full.set(mac, 32)
+  return importSymmetricKey(full)
+}
+
+export async function importSymmetricKey(raw: Uint8Array | string): Promise<SymmetricCryptoKey> {
+  const keyBytes = typeof raw === 'string' ? fromBase64(raw) : raw
+  if (keyBytes.length < 64) {
+    throw new Error('SymmetricCryptoKey must be 64 bytes')
+  }
+
+  const material = keyBytes.subarray(0, 64)
+  const encKey = await crypto.subtle.importKey(
     'raw',
-    macKeyMaterial,
+    toArrayBuffer(material.subarray(0, 32)),
+    { name: 'AES-CBC', length: 256 },
+    true,
+    ['decrypt', 'encrypt'],
+  )
+  const macKey = await crypto.subtle.importKey(
+    'raw',
+    toArrayBuffer(material.subarray(32, 64)),
     { name: 'HMAC', hash: 'SHA-256' },
-    false,
+    true,
     ['sign'],
   )
-  const macKeyBytes = await crypto.subtle.sign(
-    'HMAC',
-    macKeyImport,
-    new TextEncoder().encode('mac'),
-  )
-  return crypto.subtle.importKey(
-    'raw',
-    macKeyBytes.slice(0, 32),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  )
+
+  return {
+    encKey,
+    macKey,
+    raw: new Uint8Array(material),
+  }
 }
 
 /** Decrypt an EncString to raw bytes (used for keys and UTF-8 payloads). */
 export async function decryptToBytes(
   encString: string,
-  masterKey: CryptoKey,
+  key: SymmetricCryptoKey,
 ): Promise<Uint8Array | null> {
   if (!encString) return null
   if (!encString.includes('.')) {
@@ -206,6 +253,7 @@ export async function decryptToBytes(
     return fromBase64(payload)
   }
 
+  // AesCbc256_HmacSha256_B64
   if (encType !== '2') return null
 
   try {
@@ -214,22 +262,18 @@ export async function decryptToBytes(
 
     const iv = fromBase64(encData[0]!)
     const data = fromBase64(encData[1]!)
-    const encKey = await stretchKey(masterKey)
 
     if (encData.length >= 3 && encData[2]) {
-      const macKeyFinal = await resolveMacKey(masterKey)
       const macData = fastConcat([iv, data])
-      const computedMac = await hmacSha256(macKeyFinal, macData)
+      const computedMac = await hmacSha256(key.macKey, macData)
       const expectedMac = fromBase64(encData[2])
 
+      if (computedMac.length !== expectedMac.length) return null
       const match = computedMac.every((b, i) => b === expectedMac[i])
       if (!match) return null
     }
 
-    const decrypted = await decryptAesCbc(encKey, iv, data)
-    const paddingLen = decrypted[decrypted.length - 1]!
-    if (paddingLen > 16 || paddingLen < 1) return null
-    return decrypted.slice(0, decrypted.length - paddingLen)
+    return await decryptAesCbc(key.encKey, iv, data)
   }
   catch {
     return null
@@ -238,7 +282,7 @@ export async function decryptToBytes(
 
 export async function decryptString(
   encString: string,
-  masterKey: CryptoKey,
+  key: SymmetricCryptoKey,
 ): Promise<string | null> {
   if (!encString) return null
   if (!encString.includes('.')) return encString
@@ -248,7 +292,7 @@ export async function decryptString(
     return encString.substring(2) || encString
   }
 
-  const bytes = await decryptToBytes(encString, masterKey)
+  const bytes = await decryptToBytes(encString, key)
   if (!bytes) return null
 
   try {
@@ -261,13 +305,14 @@ export async function decryptString(
 
 /**
  * Unwrap the account encryption key from the login `Key` field.
- * Plaintext is either raw key bytes (32/64) or a legacy UTF-8 base64 string of those bytes.
+ * Plaintext is a 64-byte SymmetricCryptoKey (enc + mac).
  */
 export async function decryptUserKey(
   encryptedKey: string,
   masterKey: CryptoKey,
-): Promise<CryptoKey | null> {
-  const keyBytes = await decryptToBytes(encryptedKey, masterKey)
+): Promise<SymmetricCryptoKey | null> {
+  const stretched = await stretchMasterKey(masterKey)
+  const keyBytes = await decryptToBytes(encryptedKey, stretched)
   if (!keyBytes?.length) return null
 
   let raw = keyBytes
@@ -281,24 +326,18 @@ export async function decryptUserKey(
     // Binary key material — use as-is
   }
 
-  try {
-    // 64-byte Bitwarden SymmetricCryptoKey: enc (32) + mac (32). AES uses the enc half.
-    if (raw.length >= 64) {
-      return importAesKey(raw.subarray(0, 32))
-    }
-    if (raw.length === 32 || raw.length === 16) {
-      return importAesKey(raw)
-    }
-  }
-  catch {
-    return null
+  if (raw.length >= 64) {
+    return importSymmetricKey(raw.subarray(0, 64))
   }
 
   return null
 }
 
-/** Export a CryptoKey to base64 for tab-scoped sessionStorage. */
-export async function exportKeyBase64(key: CryptoKey): Promise<string> {
+/** Export a CryptoKey or SymmetricCryptoKey to base64 for tab-scoped sessionStorage. */
+export async function exportKeyBase64(key: CryptoKey | SymmetricCryptoKey): Promise<string> {
+  if ('raw' in key) {
+    return toBase64(key.raw)
+  }
   const raw = await crypto.subtle.exportKey('raw', key)
   return toBase64(raw)
 }
@@ -307,9 +346,26 @@ export async function importAesKey(raw: Uint8Array | string): Promise<CryptoKey>
   const keyBytes = typeof raw === 'string' ? fromBase64(raw) : raw
   return crypto.subtle.importKey(
     'raw',
-    keyBytes,
+    toArrayBuffer(keyBytes),
     { name: 'AES-CBC', length: 256 },
     true,
     ['decrypt', 'encrypt'],
   )
+}
+
+/** Encrypt plaintext with a SymmetricCryptoKey (type 2 EncString). For tests. */
+export async function encryptString(
+  plaintext: string,
+  key: SymmetricCryptoKey,
+): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(16))
+  const data = new TextEncoder().encode(plaintext)
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-CBC', iv: toArrayBuffer(iv) },
+    key.encKey,
+    data,
+  )
+  const ct = new Uint8Array(encrypted)
+  const mac = await hmacSha256(key.macKey, fastConcat([iv, ct]))
+  return `2.${toBase64(iv)}|${toBase64(ct)}|${toBase64(mac)}`
 }

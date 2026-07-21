@@ -14,6 +14,8 @@ import {
   decryptUserKey,
   exportKeyBase64,
   importAesKey,
+  importSymmetricKey,
+  type SymmetricCryptoKey,
 } from '~/utils/crypto'
 
 const AUTH_STORAGE_KEY = 'bw-auth-session'
@@ -73,7 +75,7 @@ function getDeviceIdentifier(): string {
 export function useBitwardenAuth() {
   const session = useState<AuthSession | null>('bw-session', () => null)
   const masterKey = useState<CryptoKey | null>('bw-master-key', () => null)
-  const userKey = useState<CryptoKey | null>('bw-user-key', () => null)
+  const userKey = useState<SymmetricCryptoKey | null>('bw-user-key', () => null)
   const isLoading = useState('bw-auth-loading', () => false)
   const error = useState<string | null>('bw-auth-error', () => null)
 
@@ -93,7 +95,8 @@ export function useBitwardenAuth() {
   )
 
   const isAuthenticated = computed(() => Boolean(session.value?.accessToken))
-  const isUnlocked = computed(() => Boolean(userKey.value || masterKey.value))
+  /** Vault items need the 64-byte user SymmetricCryptoKey — master key alone is not enough. */
+  const isUnlocked = computed(() => Boolean(userKey.value))
   const isLocked = computed(() => isAuthenticated.value && !isUnlocked.value)
   const needsTwoFactor = computed(() => Boolean(twoFactorChallenge.value))
 
@@ -158,8 +161,10 @@ export function useBitwardenAuth() {
       if (payload.masterKey) {
         masterKey.value = await importAesKey(payload.masterKey)
       }
+      // Only accept a full 64-byte SymmetricCryptoKey (legacy 32-byte AES-only dumps are invalid).
       if (payload.userKey) {
-        userKey.value = await importAesKey(payload.userKey)
+        const restored = await importSymmetricKey(payload.userKey)
+        userKey.value = restored
       }
     }
     catch {
@@ -234,14 +239,18 @@ export function useBitwardenAuth() {
   ) {
     const mk = await makeMasterKey(password, email, prelogin)
     masterKey.value = mk
-    if (loginResult.key) {
-      try {
-        userKey.value = await decryptUserKey(loginResult.key, mk)
-      }
-      catch {
-        userKey.value = null
-      }
+
+    if (!loginResult.key) {
+      error.value = 'Server did not return an encryption key. Cannot unlock the vault.'
+      throw new Error(error.value)
     }
+
+    const uk = await decryptUserKey(loginResult.key, mk)
+    if (!uk) {
+      error.value = 'Could not unwrap the vault encryption key. Check your master password and try again.'
+      throw new Error(error.value)
+    }
+    userKey.value = uk
 
     const hash = masterPasswordHash
       ?? await hashMasterPassword(password, email, prelogin)
@@ -445,8 +454,8 @@ export function useBitwardenAuth() {
 
   /**
    * Re-derive encryption keys after an explicit lock.
-   * Password is verified against the hash stored at login (same check the
-   * identity server uses), so unlock works even when Key unwrap is flaky.
+   * Verifies the master password hash (when stored) and unwraps the user
+   * SymmetricCryptoKey from the protected Key field.
    */
   async function unlock(password: string) {
     if (!session.value?.accessToken) {
@@ -485,19 +494,15 @@ export function useBitwardenAuth() {
       }
 
       const mk = await makeMasterKey(password, session.value.email, prelogin)
-      let uk: CryptoKey | null = null
-      if (session.value.key) {
-        try {
-          uk = await decryptUserKey(session.value.key, mk)
-        }
-        catch {
-          uk = null
-        }
+
+      if (!session.value.key) {
+        error.value = 'Could not unlock this session. Sign out and sign in again.'
+        throw new Error(error.value)
       }
 
-      // Older sessions without a stored hash: require a successful key unwrap.
-      if (!session.value.masterPasswordHash && session.value.key && !uk) {
-        error.value = 'Could not unlock this session. Sign out and sign in once, then try Lock again.'
+      const uk = await decryptUserKey(session.value.key, mk)
+      if (!uk) {
+        error.value = 'Incorrect master password.'
         throw new Error(error.value)
       }
 

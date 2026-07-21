@@ -3,7 +3,7 @@ import { decryptString } from '~/utils/crypto'
 import { filterCiphers } from '~/utils/cipher-filter'
 
 export function useVaultContext() {
-  const { session, userKey, masterKey } = useBitwardenAuth()
+  const { session, userKey } = useBitwardenAuth()
   const vaultApi = useVaultApi()
 
   const organizations = useState<Organization[]>('bw-organizations', () => [])
@@ -50,7 +50,7 @@ export function useVaultContext() {
     if (!value) return value
     if (!value.startsWith('2.')) return value
 
-    const key = userKey.value ?? masterKey.value
+    const key = userKey.value
     if (!key) return undefined
 
     const decrypted = await decryptString(value, key)
