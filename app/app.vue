@@ -14,9 +14,9 @@ colorMode.preference = 'light'
 const { restoreSession } = useBitwardenAuth()
 const { restoreCredentials } = useOrgApi()
 
-onMounted(() => {
+onMounted(async () => {
   colorMode.preference = 'light'
-  restoreSession()
+  await restoreSession()
   restoreCredentials()
 })
 </script>

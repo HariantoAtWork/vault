@@ -184,6 +184,13 @@ export function useVaultContext() {
     activeVaultId.value = vaultId
   }
 
+  function clearDecryptedData() {
+    ciphers.value = []
+    organizations.value = []
+    folders.value = []
+    syncError.value = null
+  }
+
   return {
     organizations,
     ciphers,
@@ -199,5 +206,6 @@ export function useVaultContext() {
     cipherCount,
     syncVault,
     selectVault,
+    clearDecryptedData,
   }
 }

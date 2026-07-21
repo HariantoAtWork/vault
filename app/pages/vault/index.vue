@@ -14,7 +14,10 @@ const {
   typeFilter,
 } = useVaultContext()
 
+const { isUnlocked } = useBitwardenAuth()
+
 onMounted(async () => {
+  if (!isUnlocked.value) return
   try {
     await syncVault()
   }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { VaultContext } from '~/types/bitwarden'
 
-const { session, logout } = useBitwardenAuth()
+const { session, logout, lockVault } = useBitwardenAuth()
 const { vaultContexts, activeVaultId, selectVault, ciphers } = useVaultContext()
 
 function getVaultCount(vault: VaultContext): number {
@@ -123,15 +123,27 @@ function getVaultCount(vault: VaultContext): number {
     </template>
 
     <template #footer="{ collapsed }">
-      <UButton
-        :icon="collapsed ? 'i-lucide-lock' : undefined"
-        :label="collapsed ? undefined : 'Lock vault'"
-        color="neutral"
-        variant="outline"
-        block
-        class="border-white/20 text-white hover:bg-white/10"
-        @click="logout"
-      />
+      <div class="flex w-full flex-col gap-2">
+        <UButton
+          :icon="collapsed ? 'i-lucide-lock' : undefined"
+          :label="collapsed ? undefined : 'Lock vault'"
+          color="neutral"
+          variant="outline"
+          block
+          class="border-white/20 text-white hover:bg-white/10"
+          @click="lockVault"
+        />
+        <UButton
+          v-if="!collapsed"
+          icon="i-lucide-log-out"
+          label="Sign out"
+          color="neutral"
+          variant="ghost"
+          block
+          class="text-white/70 hover:text-white"
+          @click="logout"
+        />
+      </div>
     </template>
   </UDashboardSidebar>
 </template>

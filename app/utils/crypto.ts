@@ -113,7 +113,7 @@ export async function makeMasterKey(
     'raw',
     masterKeyBytes,
     { name: 'AES-CBC', length: 256 },
-    false,
+    true,
     ['decrypt', 'encrypt'],
   )
 }
@@ -167,16 +167,43 @@ async function stretchKey(masterKey: CryptoKey): Promise<CryptoKey> {
   )
 }
 
-export async function decryptString(
+async function resolveMacKey(masterKey: CryptoKey): Promise<CryptoKey> {
+  const macKeyMaterial = await crypto.subtle.exportKey('raw', masterKey)
+  const macKeyImport = await crypto.subtle.importKey(
+    'raw',
+    macKeyMaterial,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const macKeyBytes = await crypto.subtle.sign(
+    'HMAC',
+    macKeyImport,
+    new TextEncoder().encode('mac'),
+  )
+  return crypto.subtle.importKey(
+    'raw',
+    macKeyBytes.slice(0, 32),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+}
+
+/** Decrypt an EncString to raw bytes (used for keys and UTF-8 payloads). */
+export async function decryptToBytes(
   encString: string,
   masterKey: CryptoKey,
-): Promise<string | null> {
+): Promise<Uint8Array | null> {
   if (!encString) return null
-  if (!encString.includes('.')) return encString
+  if (!encString.includes('.')) {
+    return new TextEncoder().encode(encString)
+  }
 
   const encType = encString.charAt(0)
   if (encType === '0') {
-    return encString.substring(2) || encString
+    const payload = encString.substring(2) || encString
+    return fromBase64(payload)
   }
 
   if (encType !== '2') return null
@@ -190,27 +217,7 @@ export async function decryptString(
     const encKey = await stretchKey(masterKey)
 
     if (encData.length >= 3 && encData[2]) {
-      const macKeyMaterial = await crypto.subtle.exportKey('raw', masterKey)
-      const macKeyImport = await crypto.subtle.importKey(
-        'raw',
-        macKeyMaterial,
-        { name: 'HMAC', hash: 'SHA-256' },
-        false,
-        ['sign'],
-      )
-      const macKeyBytes = await crypto.subtle.sign(
-        'HMAC',
-        macKeyImport,
-        new TextEncoder().encode('mac'),
-      )
-      const macKeyFinal = await crypto.subtle.importKey(
-        'raw',
-        macKeyBytes.slice(0, 32),
-        { name: 'HMAC', hash: 'SHA-256' },
-        false,
-        ['sign'],
-      )
-
+      const macKeyFinal = await resolveMacKey(masterKey)
       const macData = fastConcat([iv, data])
       const computedMac = await hmacSha256(macKeyFinal, macData)
       const expectedMac = fromBase64(encData[2])
@@ -222,24 +229,87 @@ export async function decryptString(
     const decrypted = await decryptAesCbc(encKey, iv, data)
     const paddingLen = decrypted[decrypted.length - 1]!
     if (paddingLen > 16 || paddingLen < 1) return null
-    const trimmed = decrypted.slice(0, decrypted.length - paddingLen)
-    return new TextDecoder().decode(trimmed)
+    return decrypted.slice(0, decrypted.length - paddingLen)
   }
   catch {
     return null
   }
 }
 
+export async function decryptString(
+  encString: string,
+  masterKey: CryptoKey,
+): Promise<string | null> {
+  if (!encString) return null
+  if (!encString.includes('.')) return encString
+
+  const encType = encString.charAt(0)
+  if (encType === '0') {
+    return encString.substring(2) || encString
+  }
+
+  const bytes = await decryptToBytes(encString, masterKey)
+  if (!bytes) return null
+
+  try {
+    return new TextDecoder().decode(bytes)
+  }
+  catch {
+    return null
+  }
+}
+
+/**
+ * Unwrap the account encryption key from the login `Key` field.
+ * Plaintext is either raw key bytes (32/64) or a legacy UTF-8 base64 string of those bytes.
+ */
 export async function decryptUserKey(
   encryptedKey: string,
   masterKey: CryptoKey,
 ): Promise<CryptoKey | null> {
-  const decrypted = await decryptString(encryptedKey, masterKey)
-  if (!decrypted) return null
+  const keyBytes = await decryptToBytes(encryptedKey, masterKey)
+  if (!keyBytes?.length) return null
 
-  const keyBytes = fromBase64(decrypted)
-  return crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CBC', length: 256 }, false, [
-    'decrypt',
-    'encrypt',
-  ])
+  let raw = keyBytes
+  try {
+    const asText = new TextDecoder('utf-8', { fatal: true }).decode(keyBytes)
+    if (/^[A-Za-z0-9+/]+=*$/.test(asText) && asText.length >= 22) {
+      raw = fromBase64(asText)
+    }
+  }
+  catch {
+    // Binary key material — use as-is
+  }
+
+  try {
+    // 64-byte Bitwarden SymmetricCryptoKey: enc (32) + mac (32). AES uses the enc half.
+    if (raw.length >= 64) {
+      return importAesKey(raw.subarray(0, 32))
+    }
+    if (raw.length === 32 || raw.length === 16) {
+      return importAesKey(raw)
+    }
+  }
+  catch {
+    return null
+  }
+
+  return null
+}
+
+/** Export a CryptoKey to base64 for tab-scoped sessionStorage. */
+export async function exportKeyBase64(key: CryptoKey): Promise<string> {
+  const raw = await crypto.subtle.exportKey('raw', key)
+  return toBase64(raw)
+}
+
+export async function importAesKey(raw: Uint8Array | string): Promise<CryptoKey> {
+  const keyBytes = typeof raw === 'string' ? fromBase64(raw) : raw
+  return crypto.subtle.importKey(
+    'raw',
+    keyBytes,
+    { name: 'AES-CBC', length: 256 },
+    true,
+    ['decrypt', 'encrypt'],
+  )
 }

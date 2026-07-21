@@ -8,9 +8,16 @@ import type {
 } from '~/types/bitwarden'
 import type { BitwardenErrorDetails } from '~/types/bitwarden-errors'
 import { resolveServerConfig, getStoredSelfHostUrl, setStoredSelfHostUrl } from '~/utils/servers'
-import { hashMasterPassword, makeMasterKey, decryptUserKey } from '~/utils/crypto'
+import {
+  hashMasterPassword,
+  makeMasterKey,
+  decryptUserKey,
+  exportKeyBase64,
+  importAesKey,
+} from '~/utils/crypto'
 
 const AUTH_STORAGE_KEY = 'bw-auth-session'
+const CRYPTO_KEYS_STORAGE_KEY = 'bw-crypto-keys'
 const DEVICE_ID_KEY = 'bw-device-identifier'
 
 interface AuthSession {
@@ -18,6 +25,8 @@ interface AuthSession {
   accessToken: string
   refreshToken: string
   key: string
+  /** Auth hash used to verify unlock without a full token round-trip. */
+  masterPasswordHash?: string
   server: ServerConfig
   deviceIdentifier: string
   rememberEmail: boolean
@@ -84,9 +93,11 @@ export function useBitwardenAuth() {
   )
 
   const isAuthenticated = computed(() => Boolean(session.value?.accessToken))
+  const isUnlocked = computed(() => Boolean(userKey.value || masterKey.value))
+  const isLocked = computed(() => isAuthenticated.value && !isUnlocked.value)
   const needsTwoFactor = computed(() => Boolean(twoFactorChallenge.value))
 
-  function restoreSession() {
+  async function restoreSession() {
     if (!import.meta.client) return
 
     const storedEmail = localStorage.getItem('bw-remembered-email')
@@ -106,6 +117,61 @@ export function useBitwardenAuth() {
       catch {
         sessionStorage.removeItem(AUTH_STORAGE_KEY)
       }
+    }
+
+    await restoreCryptoKeys()
+  }
+
+  async function persistCryptoKeys() {
+    if (!import.meta.client) return
+
+    try {
+      const payload: { userKey?: string, masterKey?: string } = {}
+      if (userKey.value) {
+        payload.userKey = await exportKeyBase64(userKey.value)
+      }
+      if (masterKey.value) {
+        payload.masterKey = await exportKeyBase64(masterKey.value)
+      }
+
+      if (payload.userKey || payload.masterKey) {
+        sessionStorage.setItem(CRYPTO_KEYS_STORAGE_KEY, JSON.stringify(payload))
+      }
+      else {
+        sessionStorage.removeItem(CRYPTO_KEYS_STORAGE_KEY)
+      }
+    }
+    catch {
+      // Non-extractable keys or storage failure — vault will require unlock on refresh.
+    }
+  }
+
+  async function restoreCryptoKeys() {
+    if (!import.meta.client) return
+    if (userKey.value || masterKey.value) return
+
+    const raw = sessionStorage.getItem(CRYPTO_KEYS_STORAGE_KEY)
+    if (!raw) return
+
+    try {
+      const payload = JSON.parse(raw) as { userKey?: string, masterKey?: string }
+      if (payload.masterKey) {
+        masterKey.value = await importAesKey(payload.masterKey)
+      }
+      if (payload.userKey) {
+        userKey.value = await importAesKey(payload.userKey)
+      }
+    }
+    catch {
+      sessionStorage.removeItem(CRYPTO_KEYS_STORAGE_KEY)
+      masterKey.value = null
+      userKey.value = null
+    }
+  }
+
+  function clearPersistedCryptoKeys() {
+    if (import.meta.client) {
+      sessionStorage.removeItem(CRYPTO_KEYS_STORAGE_KEY)
     }
   }
 
@@ -139,6 +205,7 @@ export function useBitwardenAuth() {
     masterKey.value = null
     userKey.value = null
     clearPendingLogin()
+    clearPersistedCryptoKeys()
     if (import.meta.client) {
       sessionStorage.removeItem(AUTH_STORAGE_KEY)
     }
@@ -158,22 +225,38 @@ export function useBitwardenAuth() {
     })
   }
 
-  async function completeLogin(loginResult: LoginSuccess, password: string, email: string, prelogin: PreloginResponse) {
+  async function completeLogin(
+    loginResult: LoginSuccess,
+    password: string,
+    email: string,
+    prelogin: PreloginResponse,
+    masterPasswordHash?: string,
+  ) {
     const mk = await makeMasterKey(password, email, prelogin)
     masterKey.value = mk
     if (loginResult.key) {
-      userKey.value = await decryptUserKey(loginResult.key, mk)
+      try {
+        userKey.value = await decryptUserKey(loginResult.key, mk)
+      }
+      catch {
+        userKey.value = null
+      }
     }
+
+    const hash = masterPasswordHash
+      ?? await hashMasterPassword(password, email, prelogin)
 
     persistSession({
       email,
       accessToken: loginResult.accessToken,
       refreshToken: loginResult.refreshToken,
       key: loginResult.key,
+      masterPasswordHash: hash,
       server: loginResult.server,
       deviceIdentifier: loginResult.deviceIdentifier,
       rememberEmail: rememberEmail.value,
     })
+    await persistCryptoKeys()
 
     clearPendingLogin()
     return loginResult
@@ -260,7 +343,7 @@ export function useBitwardenAuth() {
         return result
       }
 
-      return completeLogin(result, password, email, prelogin)
+      return completeLogin(result, password, email, prelogin, masterPasswordHash)
     }
     catch (err: unknown) {
       error.value = extractErrorMessage(err)
@@ -335,7 +418,13 @@ export function useBitwardenAuth() {
         }
       }
 
-      return completeLogin(result, pendingPassword.value, pendingEmail.value, prelogin)
+      return completeLogin(
+        result,
+        pendingPassword.value,
+        pendingEmail.value,
+        prelogin,
+        pendingMasterHash.value,
+      )
     }
     catch (err: unknown) {
       if (!error.value) error.value = extractErrorMessage(err)
@@ -351,6 +440,94 @@ export function useBitwardenAuth() {
     if (import.meta.client) {
       sessionStorage.removeItem('bw-pending-prelogin')
     }
+    error.value = null
+  }
+
+  /**
+   * Re-derive encryption keys after an explicit lock.
+   * Password is verified against the hash stored at login (same check the
+   * identity server uses), so unlock works even when Key unwrap is flaky.
+   */
+  async function unlock(password: string) {
+    if (!session.value?.accessToken) {
+      error.value = 'Session expired. Sign in again.'
+      throw new Error(error.value)
+    }
+
+    isLoading.value = true
+    error.value = null
+
+    try {
+      serverPreset.value = session.value.server.preset
+      if (session.value.server.preset === 'self' && !selfHostUrl.value.trim()) {
+        selfHostUrl.value = getStoredSelfHostUrl()
+      }
+
+      const prelogin = await $fetch<PreloginResponse & { server: ServerConfig }>(
+        '/api/bitwarden/prelogin',
+        {
+          method: 'POST',
+          body: {
+            email: session.value.email,
+            preset: serverPreset.value,
+            selfHostUrl: selfHostUrl.value,
+          },
+        },
+      )
+
+      const hash = await hashMasterPassword(password, session.value.email, prelogin)
+
+      if (session.value.masterPasswordHash) {
+        if (hash !== session.value.masterPasswordHash) {
+          error.value = 'Incorrect master password.'
+          throw new Error(error.value)
+        }
+      }
+
+      const mk = await makeMasterKey(password, session.value.email, prelogin)
+      let uk: CryptoKey | null = null
+      if (session.value.key) {
+        try {
+          uk = await decryptUserKey(session.value.key, mk)
+        }
+        catch {
+          uk = null
+        }
+      }
+
+      // Older sessions without a stored hash: require a successful key unwrap.
+      if (!session.value.masterPasswordHash && session.value.key && !uk) {
+        error.value = 'Could not unlock this session. Sign out and sign in once, then try Lock again.'
+        throw new Error(error.value)
+      }
+
+      masterKey.value = mk
+      userKey.value = uk
+
+      if (!session.value.masterPasswordHash) {
+        persistSession({
+          ...session.value,
+          masterPasswordHash: hash,
+        })
+      }
+
+      await persistCryptoKeys()
+    }
+    catch (err: unknown) {
+      if (!error.value) error.value = extractErrorMessage(err)
+      masterKey.value = null
+      userKey.value = null
+      throw err
+    }
+    finally {
+      isLoading.value = false
+    }
+  }
+
+  function lockVault() {
+    masterKey.value = null
+    userKey.value = null
+    clearPersistedCryptoKeys()
     error.value = null
   }
 
@@ -377,6 +554,8 @@ export function useBitwardenAuth() {
     rememberedEmail,
     serverConfig,
     isAuthenticated,
+    isLocked,
+    isUnlocked,
     needsTwoFactor,
     twoFactorChallenge,
     twoFactorProvider,
@@ -386,6 +565,8 @@ export function useBitwardenAuth() {
     completeTwoFactor,
     sendTwoFactorEmail,
     cancelTwoFactor,
+    unlock,
+    lockVault,
     logout,
     clearSession,
   }

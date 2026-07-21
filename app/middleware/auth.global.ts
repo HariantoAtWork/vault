@@ -1,9 +1,9 @@
-export default defineNuxtRouteMiddleware((to) => {
-  const { isAuthenticated, restoreSession } = useBitwardenAuth()
+export default defineNuxtRouteMiddleware(async (to) => {
+  // Session lives in sessionStorage — unavailable during SSR.
+  if (import.meta.server) return
 
-  if (import.meta.client) {
-    restoreSession()
-  }
+  const { isAuthenticated, restoreSession } = useBitwardenAuth()
+  await restoreSession()
 
   if (to.path.startsWith('/vault') && !isAuthenticated.value) {
     return navigateTo('/login')
