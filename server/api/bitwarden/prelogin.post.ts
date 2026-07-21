@@ -19,6 +19,7 @@ async function fetchPrelogin(apiUrl: string, identityUrl: string, email: string)
     const response = await bitwardenFetch(url, {
       method: 'POST',
       body,
+      email,
     })
 
     if (response.ok) {

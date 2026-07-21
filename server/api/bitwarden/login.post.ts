@@ -1,5 +1,19 @@
 import { getServerConfigFromBody, bitwardenFetch } from '../../utils/bitwarden'
 import { classifyFetchError, throwBitwardenError } from '../../utils/errors'
+import { BITWARDEN_DEVICE_TYPE } from '../../utils/client-headers'
+
+export interface TwoFactorChallenge {
+  twoFactorRequired: true
+  twoFactorProviders: number[]
+  twoFactorProviders2: Record<string, Record<string, string>>
+  email?: string
+}
+
+function isTwoFactorRequired(data: Record<string, unknown>): boolean {
+  const description = String(data.error_description || data.message || '').toLowerCase()
+  const hasProviders = Array.isArray(data.TwoFactorProviders) || Boolean(data.TwoFactorProviders2)
+  return hasProviders || description.includes('two factor')
+}
 
 export default defineEventHandler(async (event) => {
   const body = await readBody<{
@@ -9,6 +23,9 @@ export default defineEventHandler(async (event) => {
     selfHostUrl?: string
     deviceIdentifier?: string
     deviceName?: string
+    twoFactorToken?: string
+    twoFactorProvider?: number
+    twoFactorRemember?: boolean
   }>(event)
 
   if (!body.email?.trim() || !body.masterPasswordHash) {
@@ -29,24 +46,31 @@ export default defineEventHandler(async (event) => {
 
   const deviceId = body.deviceIdentifier || crypto.randomUUID()
   const deviceName = body.deviceName || 'Vault Web'
+  const email = body.email.trim()
 
-  // Bitwarden Identity expects camelCase device fields (not snake_case).
   const params = new URLSearchParams({
     grant_type: 'password',
     scope: 'api offline_access',
     client_id: 'web',
-    username: body.email.trim(),
+    username: email,
     password: body.masterPasswordHash,
-    deviceType: '9',
+    deviceType: BITWARDEN_DEVICE_TYPE,
     deviceIdentifier: deviceId,
     deviceName,
   })
 
+  if (body.twoFactorToken && body.twoFactorProvider != null) {
+    params.set('twoFactorToken', body.twoFactorToken)
+    params.set('twoFactorProvider', String(body.twoFactorProvider))
+    params.set('twoFactorRemember', body.twoFactorRemember ? '1' : '0')
+  }
+
   try {
     const response = await bitwardenFetch(`${server.identityUrl}/connect/token`, {
       method: 'POST',
+      email,
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
         Accept: 'application/json',
       },
       body: params.toString(),
@@ -62,6 +86,22 @@ export default defineEventHandler(async (event) => {
     }
 
     if (!response.ok) {
+      if (isTwoFactorRequired(data)) {
+        const providersRaw = data.TwoFactorProviders
+        const providers2 = (data.TwoFactorProviders2 as Record<string, Record<string, string>>) || {}
+        const providers = Array.isArray(providersRaw)
+          ? providersRaw.map(Number)
+          : Object.keys(providers2).map(Number)
+
+        setResponseStatus(event, 400)
+        return {
+          twoFactorRequired: true,
+          twoFactorProviders: providers,
+          twoFactorProviders2: providers2,
+          email: (data.Email as string) || email,
+        } satisfies TwoFactorChallenge
+      }
+
       const errorModel = data.ErrorModel as { Message?: string } | undefined
       const description = String(
         data.error_description

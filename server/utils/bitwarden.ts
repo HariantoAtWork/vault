@@ -2,6 +2,7 @@ import { Agent } from 'undici'
 import type { ServerConfig } from '~/types/bitwarden'
 import { getServerConfigFromBody } from '#shared/utils/servers'
 import { classifyFetchError } from './errors'
+import { bitwardenClientHeaders } from './client-headers'
 
 export { getServerConfigFromBody, resolveServerConfig, resolveServerUrls } from '#shared/utils/servers'
 
@@ -24,21 +25,24 @@ function allowInsecureTls(): boolean {
 
 export async function bitwardenFetch(
   url: string,
-  options: RequestInit = {},
+  options: RequestInit & { email?: string } = {},
 ): Promise<Response> {
+  const { email, ...rest } = options
+
   const headers: Record<string, string> = {
     Accept: 'application/json',
-    ...(options.headers as Record<string, string> | undefined),
+    ...bitwardenClientHeaders(email),
+    ...(rest.headers as Record<string, string> | undefined),
   }
 
   if (!headers['Content-Type'] && !headers['content-type']) {
-    if (options.body && typeof options.body === 'string' && !options.body.startsWith('grant_type=')) {
+    if (rest.body && typeof rest.body === 'string' && !rest.body.startsWith('grant_type=')) {
       headers['Content-Type'] = 'application/json'
     }
   }
 
   const fetchOptions: RequestInit & { dispatcher?: Agent } = {
-    ...options,
+    ...rest,
     headers,
   }
 

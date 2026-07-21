@@ -71,6 +71,34 @@ export interface SyncProfile {
   name?: string
 }
 
+export type TwoFactorProviderType =
+  | 0 // Authenticator (TOTP)
+  | 1 // Email
+  | 2 // Duo
+  | 3 // Yubikey
+  | 5 // Remember
+  | 6 // OrganizationDuo
+  | 7 // WebAuthn
+  | 8 // RecoveryCode
+
+export interface TwoFactorChallenge {
+  twoFactorRequired: true
+  twoFactorProviders: TwoFactorProviderType[]
+  twoFactorProviders2: Record<string, Record<string, string>>
+  email?: string
+}
+
+export const TWO_FACTOR_LABELS: Record<number, string> = {
+  0: 'Authenticator app',
+  1: 'Email',
+  2: 'Duo',
+  3: 'YubiKey',
+  5: 'Remembered device',
+  6: 'Organisation Duo',
+  7: 'Passkey / WebAuthn',
+  8: 'Recovery code',
+}
+
 export interface SyncResponse {
   profile?: SyncProfile
   organizations?: Organization[]
