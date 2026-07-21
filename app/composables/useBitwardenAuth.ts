@@ -4,6 +4,7 @@ import type {
   ServerPreset,
   SyncProfile,
 } from '~/types/bitwarden'
+import type { BitwardenErrorDetails } from '~/types/bitwarden-errors'
 import { resolveServerConfig, getStoredSelfHostUrl, setStoredSelfHostUrl } from '~/utils/servers'
 import { hashMasterPassword, makeMasterKey, decryptUserKey } from '~/utils/crypto'
 
@@ -18,6 +19,18 @@ interface AuthSession {
   deviceIdentifier: string
   rememberEmail: boolean
   profile?: SyncProfile
+}
+
+function extractErrorMessage(err: unknown): string {
+  const fetchErr = err as {
+    data?: BitwardenErrorDetails & { statusMessage?: string, message?: string }
+    statusMessage?: string
+  }
+
+  return fetchErr?.data?.message
+    || fetchErr?.data?.statusMessage
+    || fetchErr?.statusMessage
+    || (err instanceof Error ? err.message : 'Login failed')
 }
 
 export function useBitwardenAuth() {
@@ -87,6 +100,20 @@ export function useBitwardenAuth() {
     }
   }
 
+  async function testConnection() {
+    return $fetch<{
+      ok: boolean
+      code: string
+      message: string
+      server?: ServerConfig
+    }>('/api/bitwarden/health', {
+      query: {
+        preset: serverPreset.value,
+        selfHostUrl: selfHostUrl.value,
+      },
+    })
+  }
+
   async function login(email: string, password: string) {
     isLoading.value = true
     error.value = null
@@ -142,12 +169,7 @@ export function useBitwardenAuth() {
       return loginResult
     }
     catch (err: unknown) {
-      const fetchErr = err as { data?: { statusMessage?: string, message?: string }, statusMessage?: string }
-      const message = fetchErr?.data?.statusMessage
-        || fetchErr?.data?.message
-        || fetchErr?.statusMessage
-        || (err instanceof Error ? err.message : 'Login failed')
-      error.value = message
+      error.value = extractErrorMessage(err)
       throw err
     }
     finally {
@@ -155,9 +177,15 @@ export function useBitwardenAuth() {
     }
   }
 
-  function logout() {
+  async function logout() {
+    try {
+      await $fetch('/api/vault/lock', { method: 'POST' })
+    }
+    catch {
+      // lock endpoint is informational
+    }
     clearSession()
-    navigateTo('/login')
+    await navigateTo('/login')
   }
 
   return {
@@ -173,6 +201,7 @@ export function useBitwardenAuth() {
     serverConfig,
     isAuthenticated,
     restoreSession,
+    testConnection,
     login,
     logout,
     clearSession,

@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import type { ServerPreset } from '~/types/bitwarden'
-
 definePageMeta({
   layout: 'default',
 })
@@ -14,22 +12,50 @@ const {
   rememberEmail,
   rememberedEmail,
   serverConfig,
+  testConnection,
 } = useBitwardenAuth()
 
 const { syncVault } = useVaultContext()
 
 const email = ref(rememberedEmail.value)
 const password = ref('')
-const showSelfHostInput = ref(serverPreset.value === 'self')
 const localError = ref<string | null>(null)
+const connectionStatus = ref<{ ok: boolean, message: string } | null>(null)
+const testingConnection = ref(false)
+
+const showSelfHostInput = computed(() => serverPreset.value === 'self')
 
 watch(rememberedEmail, (value) => {
   if (value && !email.value) email.value = value
 }, { immediate: true })
 
-function selectServer(preset: ServerPreset) {
-  serverPreset.value = preset
-  showSelfHostInput.value = preset === 'self'
+watch(serverPreset, () => {
+  connectionStatus.value = null
+})
+
+async function handleTestConnection() {
+  localError.value = null
+  connectionStatus.value = null
+
+  if (serverPreset.value === 'self' && !selfHostUrl.value.trim()) {
+    localError.value = 'Enter your self-hosted server address.'
+    return
+  }
+
+  testingConnection.value = true
+  try {
+    const result = await testConnection()
+    connectionStatus.value = { ok: result.ok, message: result.message }
+  }
+  catch (err) {
+    connectionStatus.value = {
+      ok: false,
+      message: err instanceof Error ? err.message : 'Connection test failed',
+    }
+  }
+  finally {
+    testingConnection.value = false
+  }
 }
 
 async function handleSubmit() {
@@ -110,11 +136,28 @@ const displayError = computed(() => localError.value || error.value)
 
         <form class="space-y-6" @submit.prevent="handleSubmit">
           <AuthServerSelector
-            :model-value="serverPreset"
-            :self-host-url="selfHostUrl"
-            :show-self-host-input="showSelfHostInput"
-            @update:model-value="selectServer"
-            @update:self-host-url="selfHostUrl = $event"
+            v-model="serverPreset"
+            v-model:self-host-url="selfHostUrl"
+          />
+
+          <div v-if="showSelfHostInput" class="flex items-center gap-2">
+            <UButton
+              type="button"
+              color="neutral"
+              variant="outline"
+              icon="i-lucide-plug"
+              label="Test connection"
+              :loading="testingConnection"
+              @click="handleTestConnection"
+            />
+          </div>
+
+          <UAlert
+            v-if="connectionStatus"
+            :color="connectionStatus.ok ? 'success' : 'error'"
+            variant="subtle"
+            :icon="connectionStatus.ok ? 'i-lucide-check-circle' : 'i-lucide-circle-alert'"
+            :title="connectionStatus.message"
           />
 
           <UFormField label="Email address">

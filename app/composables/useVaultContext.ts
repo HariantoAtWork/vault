@@ -4,9 +4,11 @@ import { filterCiphers } from '~/utils/cipher-filter'
 
 export function useVaultContext() {
   const { session, userKey, masterKey } = useBitwardenAuth()
+  const vaultApi = useVaultApi()
 
   const organizations = useState<Organization[]>('bw-organizations', () => [])
   const ciphers = useState<CipherItem[]>('bw-ciphers', () => [])
+  const folders = useState<Array<{ id: string, name: string }>>('bw-folders', () => [])
   const isSyncing = useState('bw-syncing', () => false)
   const syncError = useState<string | null>('bw-sync-error', () => null)
   const activeVaultId = useState<string | null>('bw-active-vault', () => null)
@@ -99,6 +101,51 @@ export function useVaultContext() {
     }
   }
 
+  async function processSyncData(data: {
+    profile?: Record<string, unknown>
+    organizations?: Array<Record<string, unknown>>
+    ciphers?: Array<Record<string, unknown>>
+    folders?: Array<Record<string, unknown>>
+  }) {
+    if (data.profile && session.value) {
+      session.value.profile = {
+        id: data.profile.id as string,
+        email: data.profile.email as string,
+        name: data.profile.name as string | undefined,
+      }
+    }
+
+    const decryptedOrgs: Organization[] = []
+    for (const org of data.organizations ?? []) {
+      const name = await decryptField(org.name as string)
+      if (name) {
+        decryptedOrgs.push({
+          id: org.id as string,
+          name,
+          identifier: (org.identifier as string) || name,
+          status: org.status as number,
+        })
+      }
+    }
+    organizations.value = decryptedOrgs
+
+    const decryptedCiphers: CipherItem[] = []
+    for (const cipher of data.ciphers ?? []) {
+      const decrypted = await decryptCipher(cipher)
+      if (decrypted) decryptedCiphers.push(decrypted)
+    }
+    ciphers.value = decryptedCiphers
+
+    const decryptedFolders: Array<{ id: string, name: string }> = []
+    for (const folder of data.folders ?? []) {
+      const name = await decryptField(folder.name as string)
+      if (name) {
+        decryptedFolders.push({ id: folder.id as string, name })
+      }
+    }
+    folders.value = decryptedFolders
+  }
+
   async function syncVault() {
     if (!session.value?.accessToken) return
 
@@ -106,46 +153,23 @@ export function useVaultContext() {
     syncError.value = null
 
     try {
-      const data = await $fetch<{
-        profile?: { id: string, email: string, name?: string }
-        organizations?: Array<Record<string, unknown>>
-        ciphers?: Array<Record<string, unknown>>
-      }>('/api/bitwarden/sync', {
+      const payload = vaultApi.authPayload()
+      const result = await $fetch<{
+        success: boolean
+        data: {
+          profile?: Record<string, unknown>
+          organizations?: Array<Record<string, unknown>>
+          ciphers?: Array<Record<string, unknown>>
+          folders?: Array<Record<string, unknown>>
+        }
+      }>('/api/vault/sync', {
         method: 'POST',
-        body: {
-          accessToken: session.value.accessToken,
-          preset: session.value.server.preset,
-          selfHostUrl: session.value.server.preset === 'self'
-            ? session.value.server.label
-            : undefined,
-          apiUrl: session.value.server.apiUrl,
-        },
+        body: payload,
+        headers: { Authorization: `Bearer ${payload.accessToken}` },
       })
 
-      if (data.profile) {
-        session.value.profile = data.profile
-      }
-
-      const decryptedOrgs: Organization[] = []
-      for (const org of data.organizations ?? []) {
-        const name = await decryptField(org.name as string)
-        if (name) {
-          decryptedOrgs.push({
-            id: org.id as string,
-            name,
-            identifier: (org.identifier as string) || name,
-            status: org.status as number,
-          })
-        }
-      }
-      organizations.value = decryptedOrgs
-
-      const decryptedCiphers: CipherItem[] = []
-      for (const cipher of data.ciphers ?? []) {
-        const decrypted = await decryptCipher(cipher)
-        if (decrypted) decryptedCiphers.push(decrypted)
-      }
-      ciphers.value = decryptedCiphers
+      vaultApi.lastSync.value = new Date().toISOString()
+      await processSyncData(result.data)
     }
     catch (err: unknown) {
       syncError.value = err instanceof Error ? err.message : 'Failed to sync vault'
@@ -163,6 +187,7 @@ export function useVaultContext() {
   return {
     organizations,
     ciphers,
+    folders,
     isSyncing,
     syncError,
     activeVaultId,

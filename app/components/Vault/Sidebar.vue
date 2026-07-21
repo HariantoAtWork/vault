@@ -95,6 +95,31 @@ function getVaultCount(vault: VaultContext): number {
           </li>
         </ul>
       </nav>
+
+      <div v-if="!collapsed" class="mt-4 space-y-1 border-t border-white/10 pt-4">
+        <UButton
+          to="/vault/settings"
+          icon="i-lucide-settings"
+          label="Settings"
+          color="neutral"
+          variant="ghost"
+          block
+          class="text-white/80 hover:text-white"
+        />
+        <UButton
+          to="/vault/admin"
+          icon="i-lucide-building-2"
+          label="Org admin"
+          color="neutral"
+          variant="ghost"
+          block
+          class="text-white/80 hover:text-white"
+        />
+      </div>
+      <div v-else class="mt-4 space-y-1 border-t border-white/10 pt-4">
+        <UButton to="/vault/settings" icon="i-lucide-settings" color="neutral" variant="ghost" block class="text-white/80" />
+        <UButton to="/vault/admin" icon="i-lucide-building-2" color="neutral" variant="ghost" block class="text-white/80" />
+      </div>
     </template>
 
     <template #footer="{ collapsed }">
