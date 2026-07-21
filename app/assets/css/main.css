@@ -36,8 +36,16 @@
   --font-body: var(--font-sans);
 
   --ui-radius: 0.75rem;
-  --ui-primary: var(--ui-color-bitwarden-500);
+  --ui-primary: var(--color-bitwarden-500);
   --ui-bg: var(--bw-off-white);
+  --ui-text: var(--bw-deep-blue);
+  --ui-text-highlighted: var(--bw-deep-blue);
+  --ui-text-muted: var(--bw-medium-grey);
+  --ui-text-toned: #5a6b7d;
+  --ui-text-dimmed: var(--bw-medium-grey);
+  --ui-border: var(--bw-light-grey);
+  --ui-bg-elevated: var(--bw-white);
+  --ui-bg-muted: var(--bw-off-white);
 }
 
 *,

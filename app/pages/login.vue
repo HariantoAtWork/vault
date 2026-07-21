@@ -19,6 +19,7 @@ const { syncVault } = useVaultContext()
 
 const email = ref(rememberedEmail.value)
 const password = ref('')
+const showPassword = ref(false)
 const localError = ref<string | null>(null)
 const connectionStatus = ref<{ ok: boolean, message: string } | null>(null)
 const testingConnection = ref(false)
@@ -121,20 +122,24 @@ const displayError = computed(() => localError.value || error.value)
       <UCard
         class="w-full max-w-md animate-fade-rise"
         style="animation-delay: 0.05s"
-        :ui="{ body: 'space-y-6' }"
+        :ui="{
+          root: 'bg-white ring-[var(--bw-light-grey)]',
+          header: 'bg-white',
+          body: 'space-y-6 bg-white',
+        }"
       >
         <template #header>
           <div>
-            <h2 class="text-2xl font-bold text-highlighted">
+            <h2 class="text-2xl font-bold text-[var(--bw-deep-blue)]">
               Sign in
             </h2>
-            <p class="mt-1 text-sm text-muted">
+            <p class="mt-1 text-sm text-[var(--bw-medium-grey)]">
               Connected to {{ serverConfig.label }}
             </p>
           </div>
         </template>
 
-        <form class="space-y-6" @submit.prevent="handleSubmit">
+        <form class="flex w-full flex-col gap-6" @submit.prevent="handleSubmit">
           <AuthServerSelector
             v-model="serverPreset"
             v-model:self-host-url="selfHostUrl"
@@ -160,7 +165,7 @@ const displayError = computed(() => localError.value || error.value)
             :title="connectionStatus.message"
           />
 
-          <UFormField label="Email address">
+          <UFormField label="Email address" class="w-full">
             <UInput
               v-model="email"
               type="email"
@@ -168,21 +173,41 @@ const displayError = computed(() => localError.value || error.value)
               placeholder="you@company.com"
               icon="i-lucide-mail"
               required
+              class="w-full"
             />
           </UFormField>
 
-          <UFormField label="Master password">
+          <UFormField label="Master password" class="w-full">
             <UInput
               v-model="password"
-              type="password"
+              :type="showPassword ? 'text' : 'password'"
               autocomplete="current-password"
               placeholder="Your master password"
               icon="i-lucide-lock-keyhole"
               required
-            />
+              class="w-full"
+              :ui="{ root: 'w-full', base: 'w-full', trailing: 'pe-1' }"
+            >
+              <template #trailing>
+                <UButton
+                  type="button"
+                  color="neutral"
+                  variant="ghost"
+                  size="sm"
+                  square
+                  :icon="showPassword ? 'i-lucide-eye-off' : 'i-lucide-eye'"
+                  :aria-label="showPassword ? 'Hide master password' : 'Show master password'"
+                  @click="showPassword = !showPassword"
+                />
+              </template>
+            </UInput>
           </UFormField>
 
-          <UCheckbox v-model="rememberEmail" label="Remember email" />
+          <UCheckbox
+            v-model="rememberEmail"
+            label="Remember email"
+            :ui="{ label: 'text-[var(--bw-deep-blue)]' }"
+          />
 
           <UAlert
             v-if="displayError"
@@ -196,9 +221,11 @@ const displayError = computed(() => localError.value || error.value)
             type="submit"
             block
             size="lg"
+            color="primary"
             :loading="isLoading"
             icon="i-lucide-unlock"
             label="Unlock vault"
+            class="text-white"
           />
         </form>
       </UCard>

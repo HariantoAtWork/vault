@@ -17,7 +17,7 @@ function select(id: ServerPreset) {
 
 <template>
   <fieldset class="space-y-3">
-    <legend class="mb-1 text-sm font-medium text-highlighted">
+    <legend class="mb-1 text-sm font-medium text-[var(--bw-deep-blue)]">
       Server
     </legend>
     <div class="grid grid-cols-1 gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Server">
@@ -27,14 +27,14 @@ function select(id: ServerPreset) {
         type="button"
         class="rounded-lg border px-3 py-3 text-left transition-colors"
         :class="preset === server.id
-          ? 'border-primary bg-primary/5 ring-2 ring-primary/20'
-          : 'border-default bg-elevated hover:border-accented'"
+          ? 'border-[var(--bw-blue)] bg-[var(--bw-blue)]/8 ring-2 ring-[var(--bw-blue)]/25'
+          : 'border-[var(--bw-light-grey)] bg-white hover:border-[var(--bw-medium-grey)]'"
         role="radio"
         :aria-checked="preset === server.id"
         @click="select(server.id)"
       >
-        <span class="block text-sm font-semibold text-highlighted">{{ server.label }}</span>
-        <span class="mt-0.5 block text-xs text-muted">{{ server.hint }}</span>
+        <span class="block text-sm font-semibold text-[var(--bw-deep-blue)]">{{ server.label }}</span>
+        <span class="mt-0.5 block text-xs text-[var(--bw-medium-grey)]">{{ server.hint }}</span>
       </button>
     </div>
 
