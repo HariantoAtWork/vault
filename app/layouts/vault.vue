@@ -1,17 +1,6 @@
 <template>
-  <div class="vault-layout min-h-dvh flex">
+  <UDashboardGroup storage-key="vault" unit="rem">
     <VaultSidebar />
-    <main class="flex-1 flex flex-col min-w-0">
-      <VaultContextBar />
-      <div class="flex-1 overflow-hidden">
-        <slot />
-      </div>
-    </main>
-  </div>
+    <slot />
+  </UDashboardGroup>
 </template>
-
-<style scoped>
-.vault-layout {
-  background: var(--bw-off-white);
-}
-</style>

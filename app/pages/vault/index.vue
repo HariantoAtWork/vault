@@ -3,7 +3,6 @@ definePageMeta({
   layout: 'vault',
 })
 
-const { session, logout } = useBitwardenAuth()
 const {
   activeVault,
   filteredCiphers,
@@ -30,45 +29,33 @@ async function handleRefresh() {
 </script>
 
 <template>
-  <div class="vault-page flex flex-col h-full">
-    <VaultSearchBar
-      v-model:search="searchQuery"
-      v-model:type-filter="typeFilter"
-      :count="cipherCount"
-      :loading="isSyncing"
-      @refresh="handleRefresh"
-    />
+  <UDashboardPanel id="vault-main">
+    <template #header>
+      <VaultContextBar />
+      <VaultSearchBar
+        v-model:search="searchQuery"
+        v-model:type-filter="typeFilter"
+        :count="cipherCount"
+        :loading="isSyncing"
+        @refresh="handleRefresh"
+      />
+    </template>
 
-    <div
-      v-if="syncError"
-      class="mx-6 mt-4 rounded-lg bg-[var(--bw-red)]/10 border border-[var(--bw-red)]/30 px-4 py-3 text-sm"
-      role="alert"
-    >
-      {{ syncError }}
-    </div>
+    <template #body>
+      <UAlert
+        v-if="syncError"
+        color="error"
+        variant="subtle"
+        icon="i-lucide-circle-alert"
+        :title="syncError"
+        class="mx-4 mt-4 sm:mx-6"
+      />
 
-    <VaultCipherList
-      :ciphers="filteredCiphers"
-      :loading="isSyncing"
-      :vault-name="activeVault?.name ?? 'Vault'"
-    />
-
-    <footer class="shrink-0 px-6 py-3 border-t border-[var(--bw-light-grey)] flex items-center justify-between text-xs text-[var(--bw-medium-grey)]">
-      <span>{{ session?.email }}</span>
-      <button
-        type="button"
-        class="hover:text-[var(--bw-blue)] transition-colors"
-        @click="logout"
-      >
-        Lock vault
-      </button>
-    </footer>
-  </div>
+      <VaultCipherList
+        :ciphers="filteredCiphers"
+        :loading="isSyncing"
+        :vault-name="activeVault?.name ?? 'Vault'"
+      />
+    </template>
+  </UDashboardPanel>
 </template>
-
-<style scoped>
-.vault-page {
-  background: var(--bw-white);
-  min-height: calc(100dvh - 4.5rem);
-}
-</style>

@@ -11,6 +11,8 @@ const emit = defineEmits<{
   refresh: []
 }>()
 
+const searchInput = useTemplateRef<{ inputRef: HTMLInputElement | null }>('searchInput')
+
 const types = [
   { value: null, label: 'All' },
   { value: 1, label: 'Logins' },
@@ -18,44 +20,77 @@ const types = [
   { value: 3, label: 'Cards' },
   { value: 4, label: 'Identities' },
 ]
+
+function focusSearch() {
+  searchInput.value?.inputRef?.focus()
+}
+
+function onGlobalKeyDown(event: KeyboardEvent) {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+    event.preventDefault()
+    focusSearch()
+  }
+}
+
+onMounted(() => {
+  focusSearch()
+  window.addEventListener('keydown', onGlobalKeyDown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onGlobalKeyDown)
+})
 </script>
 
 <template>
-  <div class="search-bar flex flex-wrap items-center gap-3 px-6 py-4 border-b border-[var(--bw-light-grey)] bg-[var(--bw-off-white)]/50">
-    <div class="relative flex-1 min-w-[200px]">
-      <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--bw-medium-grey)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-      </svg>
-      <input
-        v-model="search"
-        type="search"
-        placeholder="Search names, usernames, URLs…"
-        class="w-full rounded-lg border border-[var(--bw-light-grey)] bg-white pl-10 pr-4 py-2.5 text-sm text-[var(--bw-deep-blue)] placeholder:text-[var(--bw-medium-grey)] focus:border-[var(--bw-blue)] focus:ring-2 focus:ring-[var(--bw-blue)]/20 transition"
-      >
-    </div>
+  <UDashboardToolbar>
+    <template #left>
+      <div class="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:items-center">
+        <UInput
+          ref="searchInput"
+          v-model="search"
+          icon="i-lucide-search"
+          placeholder="Search names, usernames, URLs…"
+          size="md"
+          class="min-w-0 flex-1 sm:max-w-xl"
+          :ui="{ trailing: 'pe-1 gap-0.5' }"
+        >
+          <template #trailing>
+            <UKbd value="meta" />
+            <UKbd>K</UKbd>
+          </template>
+        </UInput>
 
-    <div class="flex gap-1 p-1 rounded-lg bg-white border border-[var(--bw-light-grey)]">
-      <button
-        v-for="type in types"
-        :key="String(type.value)"
-        type="button"
-        class="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-        :class="typeFilter === type.value
-          ? 'bg-[var(--bw-blue)] text-white'
-          : 'text-[var(--bw-medium-grey)] hover:text-[var(--bw-deep-blue)]'"
-        @click="typeFilter = type.value"
-      >
-        {{ type.label }}
-      </button>
-    </div>
+        <div
+          class="flex gap-1 overflow-x-auto rounded-lg border border-default bg-elevated p-1"
+          role="group"
+          aria-label="Filter by item type"
+        >
+          <UButton
+            v-for="type in types"
+            :key="String(type.value)"
+            size="xs"
+            :variant="typeFilter === type.value ? 'solid' : 'ghost'"
+            :color="typeFilter === type.value ? 'primary' : 'neutral'"
+            class="shrink-0"
+            @click="typeFilter = type.value"
+          >
+            {{ type.label }}
+          </UButton>
+        </div>
+      </div>
+    </template>
 
-    <button
-      type="button"
-      :disabled="loading"
-      class="rounded-lg border border-[var(--bw-light-grey)] bg-white px-4 py-2.5 text-sm font-medium text-[var(--bw-deep-blue)] hover:border-[var(--bw-blue)] disabled:opacity-50 transition-colors"
-      @click="emit('refresh')"
-    >
-      {{ loading ? 'Syncing…' : 'Sync' }}
-    </button>
-  </div>
+    <template #right>
+      <UButton
+        icon="i-lucide-refresh-cw"
+        :label="loading ? 'Syncing…' : 'Sync'"
+        color="neutral"
+        variant="outline"
+        :loading="loading"
+        class="shrink-0"
+        @click="emit('refresh')"
+      />
+    </template>
+  </UDashboardToolbar>
 </template>

@@ -12,69 +12,101 @@ function getVaultCount(vault: VaultContext): number {
 </script>
 
 <template>
-  <aside class="sidebar w-72 shrink-0 flex flex-col border-r border-[var(--bw-light-grey)] bg-[var(--bw-deep-blue)] text-white">
-    <header class="p-5 border-b border-white/10">
-      <div class="flex items-center gap-3">
-        <svg class="w-8 h-8" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+  <UDashboardSidebar
+    id="vault-nav"
+    collapsible
+    resizable
+    :default-size="18"
+    :min-size="14"
+    :max-size="26"
+    :collapsed-size="0"
+    :ui="{
+      body: 'gap-1 p-3',
+    }"
+  >
+    <template #header="{ collapsed }">
+      <div class="flex items-center gap-3" :class="collapsed ? 'justify-center' : ''">
+        <svg
+          class="shrink-0 text-white"
+          :class="collapsed ? 'size-8' : 'size-9'"
+          viewBox="0 0 32 32"
+          fill="none"
+          aria-hidden="true"
+        >
           <rect width="32" height="32" rx="8" fill="var(--bw-blue)" />
           <path d="M16 8l8 4v6c0 4.4-3.6 8-8 8s-8-3.6-8-8v-6l8-4z" stroke="white" stroke-width="1.5" fill="none" />
           <circle cx="16" cy="15" r="2" fill="var(--bw-teal)" />
         </svg>
-        <div>
-          <p class="font-display font-bold text-lg leading-tight">Vault</p>
-          <p class="text-xs text-white/60 truncate max-w-[160px]">{{ session?.email }}</p>
+        <div v-if="!collapsed" class="min-w-0">
+          <p class="font-display text-lg font-bold leading-tight">
+            Vault
+          </p>
+          <p class="truncate text-xs text-white/60">
+            {{ session?.email }}
+          </p>
         </div>
       </div>
-    </header>
+    </template>
 
-    <nav class="flex-1 overflow-y-auto p-3 space-y-1" aria-label="Vault switcher">
-      <p class="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-white/50">
+    <template #default="{ collapsed }">
+      <p
+        v-if="!collapsed"
+        class="px-2 py-1.5 text-xs font-semibold uppercase tracking-wider text-white/50"
+      >
         Your vaults
       </p>
 
-      <button
-        v-for="vault in vaultContexts"
-        :key="vault.id ?? 'personal'"
-        type="button"
-        class="vault-switch w-full flex items-center gap-3 rounded-lg px-3 py-3 text-left transition-all"
-        :class="activeVaultId === vault.id
-          ? 'bg-white/15 ring-1 ring-white/20'
-          : 'hover:bg-white/8'"
-        @click="selectVault(vault.id)"
-      >
-        <span
-          class="vault-beam h-10 shrink-0 beam-pulse"
-          :class="vault.type === 'personal' ? 'vault-beam--personal' : 'vault-beam--organization'"
-        />
-        <span class="flex-1 min-w-0">
-          <span class="block font-semibold truncate">{{ vault.name }}</span>
-          <span class="block text-xs text-white/60 mt-0.5">
-            {{ vault.type === 'personal' ? 'Personal' : 'Organisation' }}
-            · {{ getVaultCount(vault) }} items
-          </span>
-        </span>
-        <span
-          v-if="activeVaultId === vault.id"
-          class="w-2 h-2 rounded-full bg-[var(--bw-teal)] shrink-0"
-          aria-hidden="true"
-        />
-      </button>
-    </nav>
+      <nav :aria-label="collapsed ? 'Vault switcher' : undefined">
+        <ul class="space-y-1" role="list">
+          <li v-for="vault in vaultContexts" :key="vault.id ?? 'personal'">
+            <button
+              type="button"
+              class="vault-switch flex w-full items-center rounded-lg text-left transition-all"
+              :class="[
+                collapsed ? 'justify-center p-2.5' : 'gap-3 px-3 py-3',
+                activeVaultId === vault.id
+                  ? 'bg-white/15 ring-1 ring-white/20'
+                  : 'hover:bg-white/8',
+              ]"
+              :title="collapsed ? vault.name : undefined"
+              :aria-current="activeVaultId === vault.id ? 'page' : undefined"
+              @click="selectVault(vault.id)"
+            >
+              <span
+                class="vault-beam shrink-0"
+                :class="[
+                  collapsed ? 'h-8' : 'h-10 beam-pulse',
+                  vault.type === 'personal' ? 'vault-beam--personal' : 'vault-beam--organization',
+                ]"
+              />
+              <span v-if="!collapsed" class="min-w-0 flex-1">
+                <span class="block truncate font-semibold">{{ vault.name }}</span>
+                <span class="mt-0.5 block text-xs text-white/60">
+                  {{ vault.type === 'personal' ? 'Personal' : 'Organisation' }}
+                  · {{ getVaultCount(vault) }} items
+                </span>
+              </span>
+              <span
+                v-if="!collapsed && activeVaultId === vault.id"
+                class="size-2 shrink-0 rounded-full bg-[var(--bw-teal)]"
+                aria-hidden="true"
+              />
+            </button>
+          </li>
+        </ul>
+      </nav>
+    </template>
 
-    <footer class="p-4 border-t border-white/10">
-      <button
-        type="button"
-        class="w-full rounded-lg border border-white/20 px-4 py-2.5 text-sm font-medium hover:bg-white/10 transition-colors"
+    <template #footer="{ collapsed }">
+      <UButton
+        :icon="collapsed ? 'i-lucide-lock' : undefined"
+        :label="collapsed ? undefined : 'Lock vault'"
+        color="neutral"
+        variant="outline"
+        block
+        class="border-white/20 text-white hover:bg-white/10"
         @click="logout"
-      >
-        Lock vault
-      </button>
-    </footer>
-  </aside>
+      />
+    </template>
+  </UDashboardSidebar>
 </template>
-
-<style scoped>
-.sidebar {
-  min-height: 100dvh;
-}
-</style>
