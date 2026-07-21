@@ -1,8 +1,8 @@
 import { argon2id } from 'hash-wasm'
 import type { PreloginResponse } from '~/types/bitwarden'
 
-function toBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer)
+function toBase64(buffer: ArrayBuffer | Uint8Array): string {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
   let binary = ''
   for (const byte of bytes) {
     binary += String.fromCharCode(byte)
@@ -19,26 +19,34 @@ function fromBase64(value: string): Uint8Array {
   return bytes
 }
 
-export async function hashMasterPassword(
+/**
+ * Derive the 32-byte master key from the master password.
+ * Bitwarden: PBKDF2-SHA256(password, email) or Argon2id(password, email).
+ */
+export async function deriveMasterKeyBytes(
   password: string,
   email: string,
   prelogin: PreloginResponse,
-): Promise<string> {
+): Promise<Uint8Array> {
   const salt = new TextEncoder().encode(email.trim().toLowerCase())
 
+  // Argon2id (kdf === 1)
   if (prelogin.kdf === 1) {
+    // Bitwarden kdfMemory is MiB; hash-wasm memorySize is KiB.
+    const memoryMiB = prelogin.kdfMemory ?? 64
     const hash = await argon2id({
       password,
       salt,
       parallelism: prelogin.kdfParallelism ?? 4,
       iterations: prelogin.kdfIterations,
-      memorySize: prelogin.kdfMemory ?? 64,
+      memorySize: memoryMiB * 1024,
       hashLength: 32,
       outputType: 'binary',
     })
-    return toBase64(hash.buffer as ArrayBuffer)
+    return new Uint8Array(hash)
   }
 
+  // PBKDF2-SHA256 (kdf === 0)
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(password),
@@ -58,7 +66,40 @@ export async function hashMasterPassword(
     256,
   )
 
-  return toBase64(bits)
+  return new Uint8Array(bits)
+}
+
+/**
+ * Master password hash sent to the identity server.
+ * Bitwarden: PBKDF2-SHA256(masterKey, password, 1 iteration) → base64.
+ */
+export async function hashMasterPassword(
+  password: string,
+  email: string,
+  prelogin: PreloginResponse,
+): Promise<string> {
+  const masterKeyBytes = await deriveMasterKeyBytes(password, email, prelogin)
+
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    masterKeyBytes,
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  )
+
+  const hashBits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: new TextEncoder().encode(password),
+      iterations: 1,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    256,
+  )
+
+  return toBase64(hashBits)
 }
 
 export async function makeMasterKey(
@@ -66,47 +107,15 @@ export async function makeMasterKey(
   email: string,
   prelogin: PreloginResponse,
 ): Promise<CryptoKey> {
-  const salt = new TextEncoder().encode(email.trim().toLowerCase())
+  const masterKeyBytes = await deriveMasterKeyBytes(password, email, prelogin)
 
-  if (prelogin.kdf === 1) {
-    const hash = await argon2id({
-      password,
-      salt,
-      parallelism: prelogin.kdfParallelism ?? 4,
-      iterations: prelogin.kdfIterations,
-      memorySize: prelogin.kdfMemory ?? 64,
-      hashLength: 32,
-      outputType: 'binary',
-    })
-    return crypto.subtle.importKey('raw', hash, { name: 'AES-CBC', length: 256 }, false, [
-      'decrypt',
-      'encrypt',
-    ])
-  }
-
-  const keyMaterial = await crypto.subtle.importKey(
+  return crypto.subtle.importKey(
     'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
+    masterKeyBytes,
+    { name: 'AES-CBC', length: 256 },
     false,
-    ['deriveBits'],
+    ['decrypt', 'encrypt'],
   )
-
-  const bits = await crypto.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      salt,
-      iterations: prelogin.kdfIterations,
-      hash: 'SHA-256',
-    },
-    keyMaterial,
-    256,
-  )
-
-  return crypto.subtle.importKey('raw', bits, { name: 'AES-CBC', length: 256 }, false, [
-    'decrypt',
-    'encrypt',
-  ])
 }
 
 async function decryptAesCbc(
@@ -148,7 +157,6 @@ async function stretchKey(masterKey: CryptoKey): Promise<CryptoKey> {
     ['sign'],
   )
   const encBits = await crypto.subtle.sign('HMAC', encKeyBytes, new TextEncoder().encode('enc'))
-  const macBits = await crypto.subtle.sign('HMAC', encKeyBytes, new TextEncoder().encode('mac'))
 
   return crypto.subtle.importKey(
     'raw',
@@ -177,8 +185,8 @@ export async function decryptString(
     const encData = encString.substring(2).split('|')
     if (encData.length < 2) return null
 
-    const iv = fromBase64(encData[0])
-    const data = fromBase64(encData[1])
+    const iv = fromBase64(encData[0]!)
+    const data = fromBase64(encData[1]!)
     const encKey = await stretchKey(masterKey)
 
     if (encData.length >= 3 && encData[2]) {
@@ -212,7 +220,7 @@ export async function decryptString(
     }
 
     const decrypted = await decryptAesCbc(encKey, iv, data)
-    const paddingLen = decrypted[decrypted.length - 1]
+    const paddingLen = decrypted[decrypted.length - 1]!
     if (paddingLen > 16 || paddingLen < 1) return null
     const trimmed = decrypted.slice(0, decrypted.length - paddingLen)
     return new TextDecoder().decode(trimmed)

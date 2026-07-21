@@ -1,6 +1,27 @@
 import { getServerConfigFromBody, bitwardenFetch } from '../../utils/bitwarden'
 import { classifyFetchError } from '../../utils/errors'
 
+async function probePrelogin(apiUrl: string, identityUrl: string) {
+  const body = JSON.stringify({ email: 'health-check@invalid.local' })
+  const urls = [
+    `${identityUrl}/accounts/prelogin`,
+    `${apiUrl}/accounts/prelogin`,
+  ]
+
+  for (const url of urls) {
+    const response = await bitwardenFetch(url, {
+      method: 'POST',
+      body,
+    })
+
+    if (response.status !== 404) {
+      return response
+    }
+  }
+
+  return null
+}
+
 export default defineEventHandler(async (event) => {
   const query = getQuery(event)
 
@@ -20,13 +41,27 @@ export default defineEventHandler(async (event) => {
     }
   }
 
-  try {
-    const response = await bitwardenFetch(`${server.apiUrl}/accounts/prelogin`, {
-      method: 'POST',
-      body: JSON.stringify({ email: 'health-check@invalid.local' }),
-    })
+  if (server.preset === 'self' && !server.apiUrl) {
+    return {
+      ok: false,
+      server,
+      code: 'invalid_url' as const,
+      message: 'Enter a valid self-hosted server address.',
+    }
+  }
 
-    // Any HTTP response means the server is reachable; 400/404 still confirms API presence.
+  try {
+    const response = await probePrelogin(server.apiUrl, server.identityUrl)
+
+    if (!response) {
+      return {
+        ok: false,
+        server,
+        code: 'not_found' as const,
+        message: 'Bitwarden API was not found at this address.',
+      }
+    }
+
     if (response.status === 404) {
       return {
         ok: false,

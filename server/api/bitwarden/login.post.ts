@@ -11,6 +11,13 @@ export default defineEventHandler(async (event) => {
     deviceName?: string
   }>(event)
 
+  if (!body.email?.trim() || !body.masterPasswordHash) {
+    throwBitwardenError(400, {
+      code: 'auth_failed',
+      message: 'Email and master password hash are required.',
+    })
+  }
+
   let server
   try {
     server = getServerConfigFromBody(body)
@@ -23,15 +30,16 @@ export default defineEventHandler(async (event) => {
   const deviceId = body.deviceIdentifier || crypto.randomUUID()
   const deviceName = body.deviceName || 'Vault Web'
 
+  // Bitwarden Identity expects camelCase device fields (not snake_case).
   const params = new URLSearchParams({
     grant_type: 'password',
     scope: 'api offline_access',
     client_id: 'web',
-    username: body.email,
+    username: body.email.trim(),
     password: body.masterPasswordHash,
-    device_type: '9',
-    device_identifier: deviceId,
-    device_name: deviceName,
+    deviceType: '9',
+    deviceIdentifier: deviceId,
+    deviceName,
   })
 
   try {
@@ -44,13 +52,29 @@ export default defineEventHandler(async (event) => {
       body: params.toString(),
     })
 
-    const data = await response.json()
+    const text = await response.text()
+    let data: Record<string, unknown>
+    try {
+      data = text ? JSON.parse(text) as Record<string, unknown> : {}
+    }
+    catch {
+      data = { error: text }
+    }
 
     if (!response.ok) {
+      const errorModel = data.ErrorModel as { Message?: string } | undefined
+      const description = String(
+        data.error_description
+        || errorModel?.Message
+        || data.message
+        || data.error
+        || 'Login failed. Check your email and master password.',
+      )
+
       throwBitwardenError(response.status, {
         code: 'auth_failed',
-        message: data.error_description || data.error || 'Login failed. Check your email and master password.',
-        cause: JSON.stringify(data),
+        message: description,
+        cause: text,
       })
     }
 
